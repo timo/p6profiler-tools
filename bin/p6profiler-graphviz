@@ -1,0 +1,80 @@
+#!/usr/bin/env perl6
+use v6.c;
+
+use DBIish;
+
+multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) {
+    my $dbh = DBIish.connect("SQLite", :database($databasefile));
+
+    my $query = $dbh.prepare(q:to/STMT/);
+        select 
+            routines.name as name,
+            routines.file as file,
+            routines.line as line,
+
+            calls.rec_depth as depth,
+            calls.callee_id as id,
+            calls.caller_id as parent_id,
+            calls.exclusive_time as exclusive,
+            parent.inclusive_time as parent_inclusive,
+            calls.inclusive_time as inclusive,
+            calls.entries as entries
+
+            from calls inner join routines on calls.routine_id = routines.id
+                       inner join calls as parent on calls.caller_id = parent.callee_id
+
+            order by inclusive desc
+                       ;
+        STMT
+
+    my %file_colors;
+
+    say 'digraph G {';
+    say '    graph [rankdir="LR", splines="line"];';
+    say '    node  [shape="box"];';
+
+    sub percentage_fill($part, $whole) {
+        my $percentage = ($part / ($whole || Inf)).round(0.05);
+        if $part == $whole { $percentage = 1.0 }
+        my $fill;
+        $fill = "blue;{$percentage.round(0.05)}:white";
+        $fill = "white" if $percentage == 0;
+        $fill = "blue" if $percentage == 1;
+        $fill;
+    }
+
+    $query.execute();
+    for $query.allrows(:array-of-hash) {
+        unless $_<name> {
+            if $_<file>.chars > 15 {
+                $_<name> = $_<file>.substr(*-15)
+            } else {
+                $_<name> = $_<file>;
+            }
+            $_<name> ~= "\@$_<line>";
+        }
+        $_<name> .= trans(["&", "<", ">"] => ["&amp;", "&lt;", "&gt;"]);
+
+        my $color = (%file_colors{$_<file>} //= "{rand.substr(0,5)} {(rand * 0.4).substr(0,5)} {(rand * 0.4 + 0.6).substr(0,5)}");
+
+        my $edgefill = percentage_fill($_<inclusive>, $_<parent_inclusive>);
+        my $nodefill = percentage_fill($_<exclusive>, $_<inclusive>);
+
+        say qq[    "$_<id>" [label=<<table border="0">
+                                <tr><td>{$_<name>}</td>
+                                <td><table border="0" cellborder="1"><tr><td bgcolor="$nodefill" width="20" height="8"></td></tr></table>
+                            </td></tr></table>>,
+                             style="filled", shape="box", color="$color", tooltip="$_<file>"];];
+        say qq[        "$_<parent_id>" -> "$_<id>"
+                          [label=<<table border="0"><tr>
+                              <td>{$_<entries>}x</td>
+                              <td><table border="0" cellborder="1"><tr><td bgcolor="$edgefill" width="20" height="4"></td></tr></table></td>
+                              </tr></table>>,
+                           shape="box"
+                          ];];
+    }
+
+    say '}';
+
+    $query.finish();
+}

@@ -1,0 +1,161 @@
+#!/usr/bin/env perl6
+use v6.d.PREVIEW;
+
+use Terminal::ANSIColor;
+use DBIish;
+
+sub routine_and_children($dbh, $id) {
+    my $query = $dbh.prepare(q:to/STMT/);
+        select
+            routines.name as name,
+            routines.line as line,
+            routines.file as file,
+
+            calls.callee_id as id,
+            calls.caller_id as parent_id,
+            calls.entries   as entries,
+            calls.exclusive_time as exclusive,
+            calls.inclusive_time as inclusive
+
+            from calls inner join routines on calls.routine_id = routines.id
+
+            where parent_id = ? or id = ?
+
+            order by id asc
+            ;
+        STMT
+
+    my $childcount = $dbh.prepare(q:to/STMT/);
+        select count(*) from calls where caller_id = ?
+        STMT
+
+    $query.execute($id, $id);
+    my @results;
+    for $query.allrows(:array-of-hash) -> $/ {
+        @results.push: $/;
+        $<name> = concise-name($<name>);
+        $<file> = concise-file($<file>);
+        $<depth> = +($<id> != $id);
+        $childcount.execute($<id>);
+        $<childcount> = $childcount.row.first;
+    }
+
+    $query.finish;
+    $childcount.finish;
+
+    @results;
+}
+
+sub breadcrumbs($dbh, $id) {
+    my $query = $dbh.prepare(q:to/STMT/);
+        select
+            routines.name as name,
+            routines.line as line,
+            routines.file as file,
+
+            calls.callee_id as id,
+            calls.caller_id as parent_id,
+            calls.inclusive_time as inclusive,
+            calls.exclusive_time as exclusive
+
+            from calls inner join routines on calls.routine_id = routines.id
+
+            where id = ?
+        STMT
+    $query.execute($id);
+
+    my $pointer = $query.row(:hash);
+    my @crumbs = $pointer;
+    while $pointer<parent_id> != $pointer<id> {
+        $query.execute($pointer<parent_id>);
+        $pointer = $query.row(:hash);
+        $pointer<name> = concise-name($pointer<name>);
+        $pointer<file> = concise-file($pointer<file>);
+        @crumbs.unshift($pointer);
+    }
+
+    $query.finish;
+
+    @crumbs;
+}
+
+sub expand($dbh, $entry) {
+    my @result;
+    for $dbh.&routine_and_children($entry<id>).skip(1).sort(-*<inclusive>) -> $/ {
+        $<depth> += $entry<depth>;
+        @result.push($/);
+    }
+    @result;
+}
+
+sub concise-name($name) {
+    return "<anon>" if $name eq "";
+    $name
+}
+sub concise-file($file is copy) {
+    if $file.starts-with("SETTING::src/core/") {
+        $file.=subst("SETTING::src/core/", "CORE::");
+        $file.=subst(".pm", "");
+    }
+    $file
+}
+
+my @partial_blocks = flat " ",
+    ("LEFT " <<~<<
+    "ONE EIGHTH, ONE QUARTER, THREE EIGHTHS, HALF, FIVE EIGHTHS, THREE QUARTERS, SEVEN EIGHTHS".split(", ") >>~>>
+    " BLOCK").join(", ").parse-names.comb;
+
+sub fillbar($percentage, $width = 15) {
+    my $parts = $width * $percentage.round(0.01);
+    return colored($width Rx "\c[FULL BLOCK]", "white on_black") if $parts == $width;
+    colored((my $leftwidth = $parts.floor) Rx "\c[FULL BLOCK]"
+    ~ @partial_blocks[($parts - $parts.floor) * 8]
+    ~ ($width - $leftwidth - 1) Rx " ", "white on_black");
+}
+
+sub mid-pad($leftdist, $text, $totalwidth) {
+    (" " x $leftdist)
+    ~ ($text)
+    ~ (" " x ($totalwidth - $leftdist - $text.chars))
+}
+
+multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) {
+    my $dbh = DBIish.connect("SQLite", :database($databasefile));
+
+    my $totaltime;
+    {
+        my $query = $dbh.prepare(q:to/STMT/);
+            select calls.inclusive_time from calls where callee_id = 0;
+            STMT
+
+        $query.execute;
+        $totaltime = $query.row.first;
+        $query.finish;
+    }
+
+    say "total run time {$totaltime / 1000}";
+
+    my $cursor_position = -1;
+
+    #my @breadcrumbs = $dbh.&breadcrumbs(0);
+    my @listentries = $dbh.&routine_and_children(0);
+
+    {
+        my $count = 2;
+
+        while @listentries == $count++ {
+            @listentries.append($dbh.&expand(@listentries.tail));
+        }
+    }
+
+    for @listentries -> $/ {
+        if $++ == $cursor_position {
+            print color("on_blue");
+        }
+        printf "%s % 50s:%-5d  %8s %s\n",
+                 mid-pad($<depth>, (+$<childcount> ?? "+ " !! "  ") ~ $<name>, 20),
+                     |$<file line>,
+                                ($<inclusive> * 100 / $totaltime).fmt("%3.3f"),
+                                       fillbar($<inclusive> / $totaltime);
+    }
+}
