@@ -179,7 +179,7 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
 
     $keystream.Supply.act({ .perl.print });
 
-    $keystream.Supply.grep("q").tap({ $continue = False });
+    $keystream.Supply.grep(*[0] == ord("q")).tap({ $continue = False });
 
-    while $continue { $keystream.emit($*IN.getc) };
+    while $continue { $keystream.emit($*IN.read(1)) };
 }
