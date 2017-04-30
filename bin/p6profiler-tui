@@ -2,6 +2,7 @@
 use v6.d.PREVIEW;
 
 use Terminal::ANSIColor;
+use Term::termios;
 use DBIish;
 
 sub routine_and_children($dbh, $id) {
@@ -148,14 +149,37 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
         }
     }
 
-    for @listentries -> $/ {
-        if $++ == $cursor_position {
-            print color("on_blue");
+    my $saved_termios = Term::termios.new(fd => 0).getattr;
+    END { $saved_termios.setattr(:DRAIN) }
+
+    my $termios := Term::termios.new(fd => 0).getattr;
+    $termios.makeraw;
+    $termios.setattr(:DRAIN);
+
+    my $continue = True;
+
+    my $menu = start {
+        while $continue {
+            for @listentries -> $/ {
+                if $++ == $cursor_position {
+                    print color("on_blue");
+                }
+                printf "%s % 50s:%-5d  %8s %s\n\r",
+                         mid-pad($<depth>, (+$<childcount> ?? "+ " !! "  ") ~ $<name>, 20),
+                             |$<file line>,
+                                        ($<inclusive> * 100 / $totaltime).fmt("%3.3f"),
+                                               fillbar($<inclusive> / $totaltime);
+            }
+
+            sleep 10;
         }
-        printf "%s % 50s:%-5d  %8s %s\n",
-                 mid-pad($<depth>, (+$<childcount> ?? "+ " !! "  ") ~ $<name>, 20),
-                     |$<file line>,
-                                ($<inclusive> * 100 / $totaltime).fmt("%3.3f"),
-                                       fillbar($<inclusive> / $totaltime);
     }
+
+    my $keystream = Supplier::Preserving.new;
+
+    $keystream.Supply.act({ .perl.print });
+
+    $keystream.Supply.grep("q").tap({ $continue = False });
+
+    while $continue { $keystream.emit($*IN.getc) };
 }
