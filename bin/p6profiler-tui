@@ -12,22 +12,22 @@ sub routine_and_children($dbh, $id) {
             routines.line as line,
             routines.file as file,
 
-            calls.callee_id as id,
-            calls.caller_id as parent_id,
-            calls.entries   as entries,
+            calls.id as id,
+            calls.parent_id      as parent_id,
+            calls.entries        as entries,
             calls.exclusive_time as exclusive,
             calls.inclusive_time as inclusive
 
             from calls inner join routines on calls.routine_id = routines.id
 
-            where parent_id = ? or id = ?
+            where calls.parent_id = ? or calls.id = ?
 
-            order by id asc
+            order by calls.id asc
             ;
         STMT
 
     my $childcount = $dbh.prepare(q:to/STMT/);
-        select count(*) from calls where caller_id = ?
+        select count(*) from calls where parent_id = ?
         STMT
 
     $query.execute($id, $id);
@@ -44,6 +44,8 @@ sub routine_and_children($dbh, $id) {
     $query.finish;
     $childcount.finish;
 
+    say @results.perl;
+
     @results;
 }
 
@@ -54,8 +56,8 @@ sub breadcrumbs($dbh, $id) {
             routines.line as line,
             routines.file as file,
 
-            calls.callee_id as id,
-            calls.caller_id as parent_id,
+            calls.id as id,
+            calls.parent_id as parent_id,
             calls.inclusive_time as inclusive,
             calls.exclusive_time as exclusive
 
@@ -126,7 +128,7 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
     my $totaltime;
     {
         my $query = $dbh.prepare(q:to/STMT/);
-            select calls.inclusive_time from calls where callee_id = 0;
+            select calls.inclusive_time from calls where id = 0;
             STMT
 
         $query.execute;
@@ -150,7 +152,7 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
     }
 
     my $saved_termios = Term::termios.new(fd => 0).getattr;
-    END { $saved_termios.setattr(:DRAIN) }
+    LEAVE { $saved_termios.setattr(:DRAIN) }
 
     my $termios := Term::termios.new(fd => 0).getattr;
     $termios.makeraw;
@@ -177,7 +179,7 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
 
     my $keystream = Supplier::Preserving.new;
 
-    $keystream.Supply.act({ .perl.print });
+    $keystream.Supply.batch(:seconds(1)).act({ .perl.print });
 
     $keystream.Supply.grep(*[0] == ord("q")).tap({ $continue = False });
 
