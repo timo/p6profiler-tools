@@ -13,15 +13,16 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
             routines.line as line,
 
             calls.rec_depth as depth,
-            calls.callee_id as id,
-            calls.caller_id as parent_id,
-            calls.exclusive_time as exclusive,
-            parent.inclusive_time as parent_inclusive,
-            calls.inclusive_time as inclusive,
-            calls.entries as entries
+            calls.id        as id,
+            calls.parent_id as parent_id,
+
+            calls.exclusive_time   as exclusive,
+            parent.inclusive_time  as parent_inclusive,
+            calls.inclusive_time   as inclusive,
+            calls.entries          as entries
 
             from calls inner join routines on calls.routine_id = routines.id
-                       inner join calls as parent on calls.caller_id = parent.callee_id
+                       inner join calls as parent on calls.parent_id = parent.id
 
             order by inclusive desc
                        ;
