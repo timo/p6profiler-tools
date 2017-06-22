@@ -3,8 +3,37 @@ use v6.c;
 
 use DBIish;
 
-multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) {
+sub targetfile($filename, $extension, --> Str) {
+    my $basename = $filename.IO.extension: '';
+    my $newname = $basename.IO.extension($extension, :0parts).absolute;
+    # Don't clobber existing files
+    while $newname.IO.e {
+        $newname = $basename.IO.extension(("a".."z").pick(5).join, :0parts).extension($extension, :0parts).absolute;
+    }
+    $newname;
+}
+
+sub create-database($databasefile where all(*.ends-with('sql'), *.IO.f, *.IO.e)) {
+    note "creating an sqlite3 database from your sql file";
+    my $newname = targetfile($databasefile, "sqlite3");
+    note "sqlite3 file path is $newname";
+    my $proc = run 'sqlite3', '-init', $databasefile, $newname, :in;
+    # Don't want to send any commands to the sqlite database.
+    $proc.in.close;
+    $newname;
+}
+
+multi sub MAIN($databasefile is copy where all(*.ends-with('sqlite3' | 'sql'), *.IO.f, *.IO.e), Str :$imagetype = "svg") {
+    if $databasefile.ends-with('sql') {
+        $databasefile = create-database($databasefile);
+    }
+
     my $dbh = DBIish.connect("SQLite", :database($databasefile));
+
+    my $imagefile = targetfile($databasefile, $imagetype);
+    note "image file path is $imagefile";
+
+    my $dotproc = run 'dot', "-T$imagetype", "-o", $imagefile, :in;
 
     my $query = $dbh.prepare(q:to/STMT/);
         select 
@@ -30,9 +59,9 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
 
     my %file_colors;
 
-    say 'digraph G {';
-    say '    graph [rankdir="LR", splines="line"];';
-    say '    node  [shape="box"];';
+    $dotproc.in.say: 'digraph G {';
+    $dotproc.in.say: '    graph [rankdir="LR", splines="line"];';
+    $dotproc.in.say: '    node  [shape="box"];';
 
     sub percentage_fill($part, $whole) {
         my $percentage = ($part / ($whole || Inf)).round(0.05);
@@ -61,12 +90,12 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
         my $edgefill = percentage_fill($_<inclusive>, $_<parent_inclusive>);
         my $nodefill = percentage_fill($_<exclusive>, $_<inclusive>);
 
-        say qq[    "$_<id>" [label=<<table border="0">
+        $dotproc.in.say: qq[    "$_<id>" [label=<<table border="0">
                                 <tr><td>{$_<name>}</td>
                                 <td><table border="0" cellborder="1"><tr><td bgcolor="$nodefill" width="20" height="8"></td></tr></table>
                             </td></tr></table>>,
                              style="filled", shape="box", color="$color", tooltip="$_<file>"];];
-        say qq[        "$_<parent_id>" -> "$_<id>"
+        $dotproc.in.say: qq[        "$_<parent_id>" -> "$_<id>"
                           [label=<<table border="0"><tr>
                               <td>{$_<entries>}x</td>
                               <td><table border="0" cellborder="1"><tr><td bgcolor="$edgefill" width="20" height="4"></td></tr></table></td>
@@ -75,7 +104,11 @@ multi sub MAIN($databasefile where all(*.ends-with('sqlite3'), *.IO.f, *.IO.e)) 
                           ];];
     }
 
-    say '}';
+    $dotproc.in.say: '}';
+
+    $dotproc.in.close;
 
     $query.finish();
+
+    note "don't forget to scroll down in the picture!";
 }
