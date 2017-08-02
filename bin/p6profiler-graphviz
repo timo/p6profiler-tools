@@ -57,6 +57,12 @@ multi sub MAIN($databasefile is copy where all(*.ends-with('sqlite3' | 'sql'), *
                        ;
         STMT
 
+    my $countquery = $dbh.prepare(q:to/STMT/);
+        select
+            count(*)
+            from calls;
+        STMT
+
     my %file_colors;
 
     $dotproc.in.say: 'digraph G {';
@@ -73,8 +79,14 @@ multi sub MAIN($databasefile is copy where all(*.ends-with('sqlite3' | 'sql'), *
         $fill;
     }
 
+    $countquery.execute();
+    my $count = $countquery.row()[0];
+
+    say "$count entries in routines table";
+
     $query.execute();
     for $query.allrows(:array-of-hash) {
+        state $idx = 0;
         unless $_<name> {
             if $_<file>.chars > 15 {
                 $_<name> = $_<file>.substr(*-15)
@@ -102,13 +114,17 @@ multi sub MAIN($databasefile is copy where all(*.ends-with('sqlite3' | 'sql'), *
                               </tr></table>>,
                            shape="box"
                           ];];
+
+        note "$idx / $count" if ++$idx %% 100;
     }
+
+    $query.finish();
 
     $dotproc.in.say: '}';
 
-    $dotproc.in.close;
+    note "letting graphviz work its magic...";
 
-    $query.finish();
+    $dotproc.in.close;
 
     note "don't forget to scroll down in the picture!";
 }
